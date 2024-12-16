@@ -1,63 +1,72 @@
 import logging
 from telegram.ext import (
     CallbackContext, 
-    CommandHandler,
+    ChatMemberHandler,
 )
 from telegram import (
     Update,
 )
 from telegram.constants import ParseMode
+import arrow
 
-from common.config import DEV_USER_ID, GREETINGS_TABLE, PERMISSIONS_TABLE
+from common.config import GREETINGS_TABLE, MESSAGE_HIST_TABLE
+from common.null_safety_utils import get_list_elements
 from datasource.db_controller import YDataBase
 
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-HELP_MESSAGE = ('Отправьте новый текст приветствия вместе с командой /edit_greeting. '
-              + 'В нём можно использовать переменные {full_name} - полное имя пользователя и {username} - его ник.'
-              + '\n\nПример (нажми чтобы скопировать)\n<code>/edit_greeting Это новый текст приветствия, {username}</code>'
-)
+GREET_TEMPLATE = '@{username} {full_name}, привет! Актуальная информация в закрепе'
 
 
-async def edit_greetings_text(update: Update, context: CallbackContext) -> None:
+async def greet_new_user(update: Update, context: CallbackContext) -> None:
     db = YDataBase()
-    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    status = update.chat_member.new_chat_member.status
 
-    permissions = db.get_fields_equal(field_filter={'user_id': [user_id]}, table_name=PERMISSIONS_TABLE)
-    logger.info(update)
-    args = context.args
+    greet_messages = db.get_fields_equal(
+        field_filter=dict(chat_id=[chat_id], is_active=[1]), 
+        table_name=GREETINGS_TABLE
+    )
+    greet_message = get_list_elements(greet_messages)
 
-    if args:
-        if user_id == DEV_USER_ID:
-            chat_id = int(args[0]) 
-            new_text = ' '.join(args[1:])
+    logger.info(update.chat_member)
+
+    if status == 'member' and greet_message:
+        message = greet_message.get('message', GREET_TEMPLATE) 
+        is_temporary = greet_message.get('is_temporary', 0) 
+        full_name = update.chat_member.new_chat_member.user.full_name
+        username = update.chat_member.new_chat_member.user.username
+        
+        if username:
+            username = '@' + username
+        else:
+            username = full_name
+
+        sent_message = await update.effective_chat.send_message(
+            message.format(
+                username=username,
+                full_name=full_name
+            ),
+            parse_mode=ParseMode.HTML
+        )
+        
+        if is_temporary:
+            db.insert_row(
+                new_row=dict(
+                    chat_id=chat_id, 
+                    message_id=sent_message.message_id, 
+                    timestamp=int(arrow.utcnow().timestamp),
+                    is_deleted=False
+                ),
+                table_name=MESSAGE_HIST_TABLE
+            )
+
             
-        elif permissions:
-            chat_id = int(permissions[0]['chat_id']) 
-            new_text = ' '.join(args)
-
-        db.insert_row(dict(chat_id=chat_id, message=new_text), table_name=GREETINGS_TABLE)
-        await update.effective_chat.send_message('Текст успешно обновлён')
-
-    else:
-        if user_id == DEV_USER_ID:
-            chat_id_available = db.get_fields_equal(table_name=GREETINGS_TABLE)
-            chat_id_available = [
-                f"<code>{row['chat_id']}</code> {row['chat_name']}"
-                for row in chat_id_available
-            ]
-            await update.effective_chat.send_message(
-                'Доступные чаты для текста\n\n' + '\n'.join(chat_id_available), 
-                parse_mode=ParseMode.HTML
-            )            
-            
-        elif permissions:
-            await update.effective_chat.send_message(HELP_MESSAGE, parse_mode=ParseMode.HTML)
 
 
-edit_text_handler = CommandHandler(
-    'edit_greeting',
-    edit_greetings_text,
+new_user_handler = ChatMemberHandler(
+    greet_new_user,
+    chat_member_types=ChatMemberHandler.ANY_CHAT_MEMBER
 )

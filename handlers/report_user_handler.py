@@ -8,6 +8,7 @@ from telegram import (
     Update,
 )
 from telegram.constants import ParseMode
+from telegram import error
 import arrow
 
 from common.config import BAN_TRESHOLD, DTTM_FORMAT, REPORTS_TABLE
@@ -65,12 +66,22 @@ async def report_user(update: Update, context: CallbackContext) -> None:
         logger.info(message)
         if message:
             logger.info(update.effective_message.reply_to_message)
-            await update.effective_chat.send_message(
-                message,
-                parse_mode=ParseMode.HTML,
-                message_thread_id=439,
-                # message_thread_id=update.effective_message.reply_to_message.message_thread_id
-            )
+            thread_id = update.effective_message.reply_to_message.message_thread_id
+
+            try:
+                await update.effective_chat.send_message(
+                    message,
+                    parse_mode=ParseMode.HTML,
+                    message_thread_id=thread_id,
+                )
+            except error.BadRequest:
+                logger.error("Invalid message thread_id")
+                msg = await update.effective_chat.send_message(
+                    message,
+                    parse_mode=ParseMode.HTML,
+                )
+                logger.info(msg)
+
             
 
 report_user_handler = CommandHandler(
